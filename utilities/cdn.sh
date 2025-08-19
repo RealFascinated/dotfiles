@@ -263,6 +263,20 @@ download_from_url() {
     local clean_url="${url%%\?*}"
     local filename=$(basename "$clean_url")
     
+    # Handle Tenor URLs specifically
+    if [[ "$url" == *"tenor.com"* ]]; then
+        echo "Processing Tenor URL..." >&2
+        local media_url=$(curl -s "$url" | grep -o 'https://media[^"]*\.\(gif\|mp4\)' | head -1)
+        if [[ -n "$media_url" ]]; then
+            echo "Found media URL: $media_url" >&2
+            url="$media_url"
+            filename=$(basename "$media_url")
+        else
+            echo "Error: Could not extract media URL from Tenor page" >&2
+            handle_error "Download Failed" "Could not extract media URL from Tenor page"
+        fi
+    fi
+    
     # Handle compound extensions
     local file_ext=""
     case "$filename" in
