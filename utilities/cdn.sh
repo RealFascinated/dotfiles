@@ -17,26 +17,14 @@ MC_CONFIG_DIR="$HOME/.mc"
 mkdir -p "$MC_CONFIG_DIR"
 SCREENSHOT_PATH=""
 
-# Check for required Wayland clipboard tools
-command -v wl-paste &>/dev/null || {
-    echo "Error: wl-paste not found. Please install wl-clipboard." >&2
-    exit 1
-}
-command -v wl-copy &>/dev/null || {
-    echo "Error: wl-copy not found. Please install wl-clipboard." >&2
-    exit 1
-}
+# Check dependencies
+for cmd in wl-paste wl-copy mc; do
+    command -v "$cmd" &>/dev/null || {
+        echo "Error: $cmd not found" >&2; exit 1
+    }
+done
 
-# Check for MinIO client (mc)
-command -v mc &>/dev/null || {
-    echo "Error: MinIO client (mc) not installed" >&2
-    exit 1
-}
-
-# Check for exiftool (for EXIF removal)
-command -v exiftool &>/dev/null || {
-    echo "Warning: exiftool not found. EXIF data will not be removed." >&2
-}
+command -v exiftool &>/dev/null || echo "Warning: exiftool not found. EXIF data will not be removed." >&2
 
 # --- Cleanup ---
 cleanup() {
@@ -116,9 +104,9 @@ parse_args() {
         esac
     done
 
-    if [[ -n "$UPLOAD_FILE" && "$CLIPBOARD_MODE" == true ]]; then
+    [[ -n "$UPLOAD_FILE" && "$CLIPBOARD_MODE" == true ]] && {
         echo "Error: Cannot use both --upload and --clipboard options" >&2; show_help; exit 1
-    fi
+    }
 }
 
 generate_random_name() {
@@ -146,63 +134,42 @@ send_notification() {
 copy_to_clipboard() {
     local text="$1" size="$2"
     log_url "$text" "$size"
-    
     printf "%s" "$text" | wl-copy
     echo "URL copied to clipboard (Wayland)" >&2
 }
 
-# Copies image file to clipboard
 copy_image_to_clipboard() {
     local image_path="$1"
-    
     wl-copy < "$image_path"
     echo "Image copied to clipboard (Wayland)" >&2
-    return 0
 }
 
-# Removes EXIF data from files
 remove_exif_data() {
     local file_path="$1"
-    
-    if command -v exiftool &>/dev/null; then
-        # Check if file has EXIF data (suppress all output)
-        if exiftool -q -fast2 "$file_path" 2>/dev/null | grep -q .; then
+    command -v exiftool &>/dev/null && {
+        exiftool -q -fast2 "$file_path" 2>/dev/null | grep -q . && {
             echo "Removing EXIF data from: $file_path" >&2
-            # Remove all metadata and suppress output
-            exiftool -all= -overwrite_original -q "$file_path" >/dev/null 2>&1 || {
-                echo "Warning: Failed to remove EXIF data" >&2
-            }
-        fi
-    fi
+            exiftool -all= -overwrite_original -q "$file_path" >/dev/null 2>&1 || echo "Warning: Failed to remove EXIF data" >&2
+        }
+    }
 }
 
-# Saves clipboard content to a temporary file
 save_clipboard_content() {
     local tmp_file="/tmp/$(generate_random_name)"
-    
-    # Try to detect if it's an image first
     if wl-paste --list-types | grep -q "image/"; then
         local image_type=$(wl-paste --list-types | grep "image/" | head -n1)
         wl-paste --type "$image_type" > "$tmp_file"
         echo "Saved clipboard image as: $tmp_file" >&2
         remove_exif_data "$tmp_file"
-        echo "$tmp_file"
-        return 0
     else
-        # Handle text content
         wl-paste --no-newline > "$tmp_file"
         echo "Saved clipboard text as: $tmp_file" >&2
-        echo "$tmp_file"
-        return 0
     fi
+    echo "$tmp_file"
 }
 
-# Centralized error handler
 handle_error() {
-    local error_type="$1"
-    local error_message="$2"
-    local file_path="$3"
-    
+    local error_type="$1" error_message="$2" file_path="$3"
     play_sound "$ERROR_SOUND"
     
     if [[ -n "$file_path" && -f "$file_path" ]]; then
@@ -214,26 +181,6 @@ handle_error() {
     else
         send_notification "❌ $error_type" "$error_message" "dialog-error"
     fi
-    
-    return 1
-}
-
-# Saves image to local fallback directory
-save_image_locally() {
-    local image_path="$1"
-    local fallback_dir="$HOME/Pictures/cdn_fallback"
-    
-    mkdir -p "$fallback_dir" || return 1
-    
-    local filename=$(basename "$image_path")
-    local timestamp=$(date '+%Y%m%d_%H%M%S')
-    local fallback_path="$fallback_dir/${timestamp}_${filename}"
-    
-    cp "$image_path" "$fallback_path" && {
-        echo "Image saved locally: $fallback_path" >&2
-        echo "$fallback_path"
-        return 0
-    }
     return 1
 }
 
@@ -250,13 +197,13 @@ is_url() {
 
 is_valid_path() {
     local path="$1"
-    if [[ -n "$path" && ! "$path" =~ [\<\>\:\"\|\\\?\*] ]]; then
+    [[ -n "$path" && ! "$path" =~ [\<\>\:\"\|\\\?\*] ]] && {
         if [[ "$path" != */* ]]; then
             [[ -f "$path" ]] && return 0
         else
             local dir="${path%/*}" && [[ -d "$dir" ]] && return 0
         fi
-    fi
+    }
     return 1
 }
 
@@ -278,14 +225,30 @@ confirm_upload() {
         --ok-label="Upload" --cancel-label="Cancel" --no-wrap
 }
 
-# --- Core Functions ---
+get_file_extension() {
+    local filename="$1"
+    case "$filename" in
+        *.tar.gz|*.tgz) echo "tar.gz" ;;
+        *.tar.xz|*.txz) echo "tar.xz" ;;
+        *.tar.bz2|*.tbz2) echo "tar.bz2" ;;
+        *.tar.zst|*.tzst) echo "tar.zst" ;;
+        *.tar.lz|*.tlz) echo "tar.lz" ;;
+        *.tar.lzma|*.tlzma) echo "tar.lzma" ;;
+        *)
+            if [[ "$filename" == *.* ]]; then
+                local last_part="${filename##*.}"
+                [[ "$last_part" =~ ^[a-zA-Z0-9]+$ ]] && echo "$last_part"
+            fi
+            ;;
+    esac
+}
 
 download_from_url() {
     local url="$1"
     local clean_url="${url%%\?*}"
     local filename=$(basename "$clean_url")
     
-    # Handle Tenor URLs specifically
+    # Handle Tenor URLs
     if [[ "$url" == *"tenor.com"* ]]; then
         echo "Processing Tenor URL..." >&2
         local media_url=$(curl -s "$url" | grep -o 'https://media[^"]*\.\(gif\|mp4\)' | head -1)
@@ -299,22 +262,7 @@ download_from_url() {
         fi
     fi
     
-    # Handle compound extensions
-    local file_ext=""
-    case "$filename" in
-        *.tar.gz|*.tgz) file_ext="tar.gz" ;;
-        *.tar.xz|*.txz) file_ext="tar.xz" ;;
-        *.tar.bz2|*.tbz2) file_ext="tar.bz2" ;;
-        *.tar.zst|*.tzst) file_ext="tar.zst" ;;
-        *.tar.lz|*.tlz) file_ext="tar.lz" ;;
-        *.tar.lzma|*.tlzma) file_ext="tar.lzma" ;;
-        *)
-            if [[ "$filename" == *.* ]]; then
-                local last_part="${filename##*.}"
-                [[ "$last_part" =~ ^[a-zA-Z0-9]+$ ]] && file_ext="$last_part"
-            fi
-            ;;
-    esac
+    local file_ext=$(get_file_extension "$filename")
     
     # Handle Discord CDN URLs
     if [[ -z "$file_ext" && "$url" == *"cdn.discordapp.com"* ]]; then
@@ -337,25 +285,20 @@ download_from_url() {
         handle_error "Download Failed" "Failed to download from URL"
     }
     
-    # Remove EXIF data after download
     remove_exif_data "$tmp_file"
-    
     echo "$tmp_file"
 }
 
 upload_file() {
     local source="$1" file_path
     
-    # Handle file:// URLs specially
+    # Handle file:// URLs
     if [[ "$source" =~ ^file:// ]]; then
         local path="${source#file://}" && path="${path//%20/ }"
-        if [[ -f "$path" ]]; then
-            file_path="$path"
-            # Remove EXIF data from local file
-            remove_exif_data "$file_path"
-        else
+        [[ -f "$path" ]] && file_path="$path" || {
             echo "Error: File not found: $path" >&2; return 1
-        fi
+        }
+        remove_exif_data "$file_path"
     elif is_url "$source"; then
         file_path=$(download_from_url "$source") || return 1
         SCREENSHOT_PATH="$file_path"
@@ -367,7 +310,6 @@ upload_file() {
         else
             file_path="$source"
         fi
-        # Remove EXIF data from local file
         remove_exif_data "$file_path"
     fi
 
@@ -376,30 +318,13 @@ upload_file() {
         handle_error "Upload Failed" "File not found or not readable"
     }
 
-    # Get file extension
-    local file_ext="" base_name=$(basename "$file_path")
-    case "$base_name" in
-        *.tar.gz|*.tgz) file_ext="tar.gz" ;;
-        *.tar.xz|*.txz) file_ext="tar.xz" ;;
-        *.tar.bz2|*.tbz2) file_ext="tar.bz2" ;;
-        *.tar.zst|*.tzst) file_ext="tar.zst" ;;
-        *.tar.lz|*.tlz) file_ext="tar.lz" ;;
-        *.tar.lzma|*.tlzma) file_ext="tar.lzma" ;;
-        *)
-            if [[ "$base_name" == *.* ]]; then
-                local last_part="${base_name##*.}"
-                [[ "$last_part" =~ ^[a-zA-Z0-9]+$ ]] && file_ext="$last_part"
-            fi
-            ;;
-    esac
-    
+    local file_ext=$(get_file_extension "$(basename "$file_path")")
     local random_name
     [[ -n "$file_ext" ]] && random_name="$(generate_random_name).$file_ext" || random_name="$(generate_random_name)"
     
     local file_size=$(stat -c%s "$file_path")
     local formatted_size=$(format_file_size "$file_size")
     local public_url="$URL_BASE/$random_name"
-    local file_name=$(basename "$file_path")
 
     confirm_upload "$file_path" "$file_size" "$formatted_size" || {
         echo "Upload cancelled by user" >&2
@@ -433,7 +358,7 @@ capture_screenshot() {
 }
 
 handle_clipboard_upload() {
-    # First, try to detect if clipboard contains an image
+    # Try image first
     if wl-paste --list-types | grep -q "image/"; then
         echo "Detected image in clipboard, saving and uploading..." >&2
         local tmp_file=$(save_clipboard_content) || {
@@ -445,7 +370,7 @@ handle_clipboard_upload() {
         return 0
     fi
 
-    # If no image detected, try to get text content
+    # Handle text content
     local clipboard_content=$(wl-paste --no-newline | tr -d '\0') || {
         echo "Error: Clipboard is empty" >&2
         handle_error "Upload Failed" "Clipboard is empty"
@@ -465,7 +390,7 @@ handle_clipboard_upload() {
     elif is_valid_path "$clipboard_content"; then
         upload_file "$clipboard_content" || return 1
     else
-        # If it's not a URL or file path, save it as a text file and upload
+        # Save as text file and upload
         echo "Saving clipboard content as text file and uploading..." >&2
         local tmp_file=$(save_clipboard_content) || {
             echo "Error: Failed to save clipboard content" >&2
@@ -515,7 +440,7 @@ main() {
     CLIPBOARD_MODE=false
     parse_args "$@"
 
-    # Always set the alias (will overwrite if it exists)
+    # Set MinIO alias
     mc --config-dir "$MC_CONFIG_DIR" alias set minio \
         "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null 2>&1
 
