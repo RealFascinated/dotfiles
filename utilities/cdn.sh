@@ -155,6 +155,46 @@ copy_image_to_clipboard() {
     fi
 }
 
+# Saves clipboard content to a temporary file
+save_clipboard_content() {
+    local tmp_file="/tmp/$(generate_random_name)"
+    
+    if command -v wl-paste &>/dev/null; then
+        # Try to detect if it's an image first
+        if wl-paste --list-types | grep -q "image/"; then
+            local image_type=$(wl-paste --list-types | grep "image/" | head -n1)
+            wl-paste --type "$image_type" > "$tmp_file"
+            echo "Saved clipboard image as: $tmp_file" >&2
+            echo "$tmp_file"
+            return 0
+        else
+            # Handle text content
+            wl-paste --no-newline > "$tmp_file"
+            echo "Saved clipboard text as: $tmp_file" >&2
+            echo "$tmp_file"
+            return 0
+        fi
+    elif command -v xclip &>/dev/null; then
+        # Try to detect if it's an image first
+        if xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -q "image/"; then
+            local image_type=$(xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep "image/" | head -n1)
+            xclip -selection clipboard -t "$image_type" -o > "$tmp_file"
+            echo "Saved clipboard image as: $tmp_file" >&2
+            echo "$tmp_file"
+            return 0
+        else
+            # Handle text content
+            xclip -selection clipboard -o > "$tmp_file"
+            echo "Saved clipboard text as: $tmp_file" >&2
+            echo "$tmp_file"
+            return 0
+        fi
+    else
+        echo "Error: Neither wl-paste nor xclip found" >&2
+        return 1
+    fi
+}
+
 # Centralized error handler
 handle_error() {
     local error_type="$1"
@@ -307,7 +347,15 @@ download_from_url() {
 upload_file() {
     local source="$1" file_path
     
-    if is_url "$source"; then
+    # Handle file:// URLs specially
+    if [[ "$source" =~ ^file:// ]]; then
+        local path="${source#file://}" && path="${path//%20/ }"
+        if [[ -f "$path" ]]; then
+            file_path="$path"
+        else
+            echo "Error: File not found: $path" >&2; return 1
+        fi
+    elif is_url "$source"; then
         file_path=$(download_from_url "$source") || return 1
         SCREENSHOT_PATH="$file_path"
     else
@@ -382,6 +430,32 @@ capture_screenshot() {
 }
 
 handle_clipboard_upload() {
+    # First, try to detect if clipboard contains an image
+    if command -v wl-paste &>/dev/null; then
+        if wl-paste --list-types | grep -q "image/"; then
+            echo "Detected image in clipboard, saving and uploading..." >&2
+            local tmp_file=$(save_clipboard_content) || {
+                echo "Error: Failed to save clipboard content" >&2
+                handle_error "Upload Failed" "Failed to save clipboard content"
+            }
+            SCREENSHOT_PATH="$tmp_file"
+            upload_file "$tmp_file" || return 1
+            return 0
+        fi
+    elif command -v xclip &>/dev/null; then
+        if xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -q "image/"; then
+            echo "Detected image in clipboard, saving and uploading..." >&2
+            local tmp_file=$(save_clipboard_content) || {
+                echo "Error: Failed to save clipboard content" >&2
+                handle_error "Upload Failed" "Failed to save clipboard content"
+            }
+            SCREENSHOT_PATH="$tmp_file"
+            upload_file "$tmp_file" || return 1
+            return 0
+        fi
+    fi
+
+    # If no image detected, try to get text content
     local clipboard_content=$(get_clipboard_content) || {
         echo "Error: Clipboard is empty" >&2
         handle_error "Upload Failed" "Clipboard is empty"
@@ -401,8 +475,14 @@ handle_clipboard_upload() {
     elif is_valid_path "$clipboard_content"; then
         upload_file "$clipboard_content" || return 1
     else
-        echo "Error: Clipboard content is neither a valid URL nor file path" >&2
-        handle_error "Upload Failed" "Invalid clipboard content"
+        # If it's not a URL or file path, save it as a text file and upload
+        echo "Saving clipboard content as text file and uploading..." >&2
+        local tmp_file=$(save_clipboard_content) || {
+            echo "Error: Failed to save clipboard content" >&2
+            handle_error "Upload Failed" "Failed to save clipboard content"
+        }
+        SCREENSHOT_PATH="$tmp_file"
+        upload_file "$tmp_file" || return 1
     fi
 }
 
