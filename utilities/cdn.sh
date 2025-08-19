@@ -17,6 +17,22 @@ MC_CONFIG_DIR="$HOME/.mc"
 mkdir -p "$MC_CONFIG_DIR"
 SCREENSHOT_PATH=""
 
+# Check for required Wayland clipboard tools
+command -v wl-paste &>/dev/null || {
+    echo "Error: wl-paste not found. Please install wl-clipboard." >&2
+    exit 1
+}
+command -v wl-copy &>/dev/null || {
+    echo "Error: wl-copy not found. Please install wl-clipboard." >&2
+    exit 1
+}
+
+# Check for MinIO client (mc)
+command -v mc &>/dev/null || {
+    echo "Error: MinIO client (mc) not installed" >&2
+    exit 1
+}
+
 # --- Cleanup ---
 cleanup() {
     [[ -f "$SCREENSHOT_PATH" ]] && rm -f "$SCREENSHOT_PATH"
@@ -41,12 +57,12 @@ Options:
   -l, --length LEN     Set random filename length (default: $FILENAME_LENGTH)
 
 Examples:
-  $0                    Take and upload a screenshot
-  $0 -u image.png      Upload local file
+  $0                                   Take and upload a screenshot
+  $0 -u image.png                      Upload local file
   $0 -u https://example.com/image.png  Upload from URL
-  $0 -c                Upload from clipboard content
-  $0 -v 0.5            Take screenshot with 50% volume
-  $0 -l 12             Generate 12-character filenames
+  $0 -c                                Upload from clipboard content
+  $0 -v 0.5                            Take screenshot with 50% volume
+  $0 -l 12                             Generate 12-character filenames
 EOF
 }
 
@@ -126,72 +142,36 @@ copy_to_clipboard() {
     local text="$1" size="$2"
     log_url "$text" "$size"
     
-    if command -v wl-copy &>/dev/null; then
-        printf "%s" "$text" | wl-copy
-        echo "URL copied to clipboard (Wayland)" >&2
-    elif command -v xclip &>/dev/null; then
-        printf "%s" "$text" | xclip -selection clipboard
-        echo "URL copied to clipboard (X11)" >&2
-    else
-        echo "Warning: Neither wl-copy nor xclip found. URL not copied." >&2
-    fi
+    printf "%s" "$text" | wl-copy
+    echo "URL copied to clipboard (Wayland)" >&2
 }
 
 # Copies image file to clipboard
 copy_image_to_clipboard() {
     local image_path="$1"
     
-    if command -v wl-copy &>/dev/null; then
-        wl-copy < "$image_path"
-        echo "Image copied to clipboard (Wayland)" >&2
-        return 0
-    elif command -v xclip &>/dev/null; then
-        xclip -selection clipboard -t image/png -i "$image_path"
-        echo "Image copied to clipboard (X11)" >&2
-        return 0
-    else
-        echo "Warning: Neither wl-copy nor xclip found. Image not copied." >&2
-        return 1
-    fi
+    wl-copy < "$image_path"
+    echo "Image copied to clipboard (Wayland)" >&2
+    return 0
 }
 
 # Saves clipboard content to a temporary file
 save_clipboard_content() {
     local tmp_file="/tmp/$(generate_random_name)"
     
-    if command -v wl-paste &>/dev/null; then
-        # Try to detect if it's an image first
-        if wl-paste --list-types | grep -q "image/"; then
-            local image_type=$(wl-paste --list-types | grep "image/" | head -n1)
-            wl-paste --type "$image_type" > "$tmp_file"
-            echo "Saved clipboard image as: $tmp_file" >&2
-            echo "$tmp_file"
-            return 0
-        else
-            # Handle text content
-            wl-paste --no-newline > "$tmp_file"
-            echo "Saved clipboard text as: $tmp_file" >&2
-            echo "$tmp_file"
-            return 0
-        fi
-    elif command -v xclip &>/dev/null; then
-        # Try to detect if it's an image first
-        if xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -q "image/"; then
-            local image_type=$(xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep "image/" | head -n1)
-            xclip -selection clipboard -t "$image_type" -o > "$tmp_file"
-            echo "Saved clipboard image as: $tmp_file" >&2
-            echo "$tmp_file"
-            return 0
-        else
-            # Handle text content
-            xclip -selection clipboard -o > "$tmp_file"
-            echo "Saved clipboard text as: $tmp_file" >&2
-            echo "$tmp_file"
-            return 0
-        fi
+    # Try to detect if it's an image first
+    if wl-paste --list-types | grep -q "image/"; then
+        local image_type=$(wl-paste --list-types | grep "image/" | head -n1)
+        wl-paste --type "$image_type" > "$tmp_file"
+        echo "Saved clipboard image as: $tmp_file" >&2
+        echo "$tmp_file"
+        return 0
     else
-        echo "Error: Neither wl-paste nor xclip found" >&2
-        return 1
+        # Handle text content
+        wl-paste --no-newline > "$tmp_file"
+        echo "Saved clipboard text as: $tmp_file" >&2
+        echo "$tmp_file"
+        return 0
     fi
 }
 
@@ -235,16 +215,6 @@ save_image_locally() {
     return 1
 }
 
-get_clipboard_content() {
-    if command -v wl-paste &>/dev/null; then
-        wl-paste --no-newline | tr -d '\0'
-    elif command -v xclip &>/dev/null; then
-        xclip -selection clipboard -o | tr -d '\0'
-    else
-        echo "Error: Neither wl-paste nor xclip found" >&2; return 1
-    fi
-}
-
 is_url() {
     local url="$1"
     if [[ "$url" =~ ^https?:// ]]; then
@@ -270,7 +240,7 @@ is_valid_path() {
 
 confirm_upload() {
     local file_path="$1" file_size="$2" formatted_size="$3"
-    (( file_size <= 128 * 1024 * 1024 )) && return 0
+    (( file_size <= 64 * 1024 * 1024 )) && return 0 # 64MB
     
     command -v zenity &>/dev/null || {
         echo "Warning: File is large ($formatted_size). Continuing with upload..." >&2; return 0
@@ -287,16 +257,6 @@ confirm_upload() {
 }
 
 # --- Core Functions ---
-
-setup_mc_alias() {
-    command -v mc &>/dev/null || {
-        send_notification "Error" "MinIO client (mc) not installed"; exit 1
-    }
-    
-    # Always set the alias (will overwrite if it exists)
-    mc --config-dir "$MC_CONFIG_DIR" alias set minio \
-        "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null 2>&1
-}
 
 download_from_url() {
     local url="$1"
@@ -431,32 +391,19 @@ capture_screenshot() {
 
 handle_clipboard_upload() {
     # First, try to detect if clipboard contains an image
-    if command -v wl-paste &>/dev/null; then
-        if wl-paste --list-types | grep -q "image/"; then
-            echo "Detected image in clipboard, saving and uploading..." >&2
-            local tmp_file=$(save_clipboard_content) || {
-                echo "Error: Failed to save clipboard content" >&2
-                handle_error "Upload Failed" "Failed to save clipboard content"
-            }
-            SCREENSHOT_PATH="$tmp_file"
-            upload_file "$tmp_file" || return 1
-            return 0
-        fi
-    elif command -v xclip &>/dev/null; then
-        if xclip -selection clipboard -t TARGETS -o 2>/dev/null | grep -q "image/"; then
-            echo "Detected image in clipboard, saving and uploading..." >&2
-            local tmp_file=$(save_clipboard_content) || {
-                echo "Error: Failed to save clipboard content" >&2
-                handle_error "Upload Failed" "Failed to save clipboard content"
-            }
-            SCREENSHOT_PATH="$tmp_file"
-            upload_file "$tmp_file" || return 1
-            return 0
-        fi
+    if wl-paste --list-types | grep -q "image/"; then
+        echo "Detected image in clipboard, saving and uploading..." >&2
+        local tmp_file=$(save_clipboard_content) || {
+            echo "Error: Failed to save clipboard content" >&2
+            handle_error "Upload Failed" "Failed to save clipboard content"
+        }
+        SCREENSHOT_PATH="$tmp_file"
+        upload_file "$tmp_file" || return 1
+        return 0
     fi
 
     # If no image detected, try to get text content
-    local clipboard_content=$(get_clipboard_content) || {
+    local clipboard_content=$(wl-paste --no-newline | tr -d '\0') || {
         echo "Error: Clipboard is empty" >&2
         handle_error "Upload Failed" "Clipboard is empty"
     }
@@ -521,10 +468,13 @@ handle_screenshot() {
 
 # --- Main Execution ---
 main() {
-    UPLOAD_FILE="" CLIPBOARD_MODE=false
+    UPLOAD_FILE="" 
+    CLIPBOARD_MODE=false
     parse_args "$@"
 
-    setup_mc_alias
+    # Always set the alias (will overwrite if it exists)
+    mc --config-dir "$MC_CONFIG_DIR" alias set minio \
+        "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null 2>&1
 
     # Sound setup
     CAPTURE_SOUND="/tmp/CaptureSound.wav"
