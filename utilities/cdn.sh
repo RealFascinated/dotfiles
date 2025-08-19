@@ -33,6 +33,11 @@ command -v mc &>/dev/null || {
     exit 1
 }
 
+# Check for exiftool (for EXIF removal)
+command -v exiftool &>/dev/null || {
+    echo "Warning: exiftool not found. EXIF data will not be removed." >&2
+}
+
 # --- Cleanup ---
 cleanup() {
     [[ -f "$SCREENSHOT_PATH" ]] && rm -f "$SCREENSHOT_PATH"
@@ -155,6 +160,22 @@ copy_image_to_clipboard() {
     return 0
 }
 
+# Removes EXIF data from files
+remove_exif_data() {
+    local file_path="$1"
+    
+    if command -v exiftool &>/dev/null; then
+        # Check if file has EXIF data (suppress all output)
+        if exiftool -q -fast2 "$file_path" 2>/dev/null | grep -q .; then
+            echo "Removing EXIF data from: $file_path" >&2
+            # Remove all metadata and suppress output
+            exiftool -all= -overwrite_original -q "$file_path" >/dev/null 2>&1 || {
+                echo "Warning: Failed to remove EXIF data" >&2
+            }
+        fi
+    fi
+}
+
 # Saves clipboard content to a temporary file
 save_clipboard_content() {
     local tmp_file="/tmp/$(generate_random_name)"
@@ -164,6 +185,7 @@ save_clipboard_content() {
         local image_type=$(wl-paste --list-types | grep "image/" | head -n1)
         wl-paste --type "$image_type" > "$tmp_file"
         echo "Saved clipboard image as: $tmp_file" >&2
+        remove_exif_data "$tmp_file"
         echo "$tmp_file"
         return 0
     else
@@ -315,6 +337,9 @@ download_from_url() {
         handle_error "Download Failed" "Failed to download from URL"
     }
     
+    # Remove EXIF data after download
+    remove_exif_data "$tmp_file"
+    
     echo "$tmp_file"
 }
 
@@ -326,6 +351,8 @@ upload_file() {
         local path="${source#file://}" && path="${path//%20/ }"
         if [[ -f "$path" ]]; then
             file_path="$path"
+            # Remove EXIF data from local file
+            remove_exif_data "$file_path"
         else
             echo "Error: File not found: $path" >&2; return 1
         fi
@@ -340,6 +367,8 @@ upload_file() {
         else
             file_path="$source"
         fi
+        # Remove EXIF data from local file
+        remove_exif_data "$file_path"
     fi
 
     [[ -f "$file_path" && -r "$file_path" ]] || {
