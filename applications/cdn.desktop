@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CDN Upload
+Comment=Upload files to CDN
+Exec=env MINIO_ENDPOINT=https://setme.example.com MINIO_ACCESS_KEY=setme MINIO_SECRET_KEY=setme BUCKET_NAME=setme URL_BASE=https://setme.example.com SOUND_VOLUME=1 FILENAME_LENGTH=8 scriptlocation/cdn.sh
+Icon=image-x-generic
+Terminal=false
+Categories=Graphics;Network;
+Keywords=screenshot;upload;cdn;image;
